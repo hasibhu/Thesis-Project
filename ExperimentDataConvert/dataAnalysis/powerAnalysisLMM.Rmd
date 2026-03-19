@@ -1,0 +1,279 @@
+---
+title: "Power Analysis for Linear Mixed Effects Model"
+output: html_document
+date: "2026-03-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(width = 100)
+```
+
+Clear environment
+```{r, include=FALSE}
+rm(list = ls(all.names = TRUE))
+```
+
+Install packages
+```{r}
+install.packages(c(
+  "lme4",
+  "simr",
+  "tidyverse",
+  "broom",
+  "ggeffects"
+))
+```
+
+Load libraries
+```{r, include=FALSE}
+library(lme4)
+library(simr)
+library(tidyverse)
+library(broom)
+library(ggeffects)
+```
+
+Load pilot data
+```{r}
+
+path  <- "~/labrotation.si@gmail.com - Google Drive/My Drive/Hasib Thesis/ExperimentDataConvert/dataAnalysis/dataFiles"
+
+files <-list.files(path, pattern = "\\.csv$", full.names = TRUE, recursive = FALSE)
+names(files) <- basename(files)
+
+read_one <- function(f){
+  df <- read_csv(f, show_col_types = FALSE,
+                 na = c("", "NA", "NaN"),
+                 locale = locale(encoding = "UTF-8"),
+                 guess_max = 100000)
+  if ("ID" %in% names(df)) mutate(df, ID = as.character(.data$ID)) else df
+}
+
+DT <- map_dfr(files, read_one, .id = "source_file") %>%
+  relocate(source_file, .before = 1)
+
+# Check structure
+glimpse(DT)
+```
+
+Prepare data for LMM
+```{r}
+
+# Convert signal_detection to binary: Hit = 1, others = 0
+DT <- DT %>%
+  mutate(Hit_binary = ifelse(signal_detection == "Hit", 1, 0))
+
+# Check the data
+DT %>%
+  group_by(ID, condition) %>%
+  summarise(
+    n_trials = n(),
+    n_hits = sum(Hit_binary),
+    hit_rate = mean(Hit_binary),
+    .groups = "drop"
+  ) %>%
+  head(20)
+
+# Check unique conditions and gapOf values
+cat("Unique conditions:", unique(DT$condition), "\n")
+cat("Unique gapOf:", sort(unique(DT$gapOf)), "\n")
+
+```
+
+Fit base LMM
+```{r}
+
+# Fit the linear mixed effects model
+# Formula: Hit_Rate ~ condition * gapOf + (1|ID)
+
+# Option 1: Using binary outcome with binomial family
+# model_binomial <- glmer(Hit_binary ~ condition * gapOf + (1|ID), 
+#                         data = DT, family = binomial)
+
+# Option 2: Using hit rate as continuous (requires aggregation)
+# Calculate hit rate per participant per condition per gapOf
+DT_agg <- DT %>%
+  group_by(ID, condition, gapOf) %>%
+  summarise(
+    n_trials = n(),
+    n_hits = sum(Hit_binary),
+    hit_rate = mean(Hit_binary),
+    .groups = "drop"
+  )
+
+# Fit LMM with aggregated data
+model <- lmer(hit_rate ~ condition * gapOf + (1|ID), data = DT_agg)
+
+summary(model)
+
+# Check model diagnostics
+plot(model)
+
+```
+
+Check fixed effects
+```{r}
+
+# Get fixed effects estimates
+fixef(model)
+
+# Confidence intervals
+confint(model)
+
+```
+
+Power analysis using simr
+```{r}
+
+# Power for fixed effects
+# Run simulation to test power for condition effect
+
+# Test power for main effect of condition
+power_condition <- powerSim(model, 
+                            test = fixed("condition", "lr"),
+                            nsim = 100,
+                            seed = 42)
+
+print(power_condition)
+
+# Test power for interaction
+power_interaction <- powerSim(model,
+                              test = fixed("condition:gapOf", "lr"),
+                              nsim = 100,
+                              seed = 42)
+
+print(power_interaction)
+
+```
+
+Power curve - vary number of subjects
+```{r}
+
+# Create power curve to find required sample size
+# Extend the model with more subjects
+model_ext <- extend(model, along = "ID", n = 50)
+
+# Run power curve
+pc <- powerCurve(model_ext,
+                 test = fixed("condition", "lr"),
+                 along = "ID",
+                 nsim = 100,
+                 seed = 42)
+
+print(pc)
+plot(pc)
+
+```
+
+Find minimum sample size for 80% power
+```{r}
+
+# Test different sample sizes to find minimum for 80% power
+# Start with current sample size
+current_n <- length(unique(DT_agg$ID))
+cat("Current sample size:", current_n, "\n")
+
+# Test increasing sample sizes
+test_sizes <- c(20, 30, 40, 50, 60, 80, 100)
+
+power_results <- data.frame(
+  n_subjects = integer(),
+  power = numeric()
+)
+
+for (n in test_sizes) {
+  cat("Testing n =", n, "...\n")
+  model_ext <- extend(model, along = "ID", n = n)
+  p <- powerSim(model_ext, 
+                test = fixed("condition", "lr"),
+                nsim = 50,  # fewer simulations for speed
+                seed = 42)
+  power_results <- rbind(power_results, data.frame(n_subjects = n, power = p$p))
+}
+
+print(power_results)
+
+# Plot power curve
+ggplot(power_results, aes(x = n_subjects, y = power)) +
+  geom_line() +
+  geom_point() +
+  geom_hline(yintercept = 0.80, linetype = "dashed", color = "red") +
+  labs(x = "Number of Subjects", y = "Power", title = "Power Curve for Condition Effect") +
+  theme_minimal()
+
+# Find minimum n for 80% power
+min_n <- power_results %>%
+  filter(power >= 0.80) %>%
+  slice_min(n_subjects) %>%
+  pull(n_subjects)
+
+if (is.na(min_n)) {
+  cat("80% power not achieved within tested range. Consider larger sample sizes.\n")
+} else {
+  cat("Minimum sample size for 80% power:", min_n, "\n")
+}
+
+```
+
+Power for gapOf effect
+```{r}
+
+# Test power for gapOf main effect
+power_gapof <- powerSim(model,
+                        test = fixed("gapOf", "lr"),
+                        nsim = 100,
+                        seed = 42)
+
+print(power_gapof)
+
+```
+
+Summary
+```{r}
+
+cat("=== Power Analysis Summary ===\n\n")
+cat("Model: hit_rate ~ condition * gapOf + (1|ID)\n\n")
+cat("Current sample size:", current_n, "subjects\n\n")
+
+cat("Power results:\n")
+cat("- Condition effect power:", power_condition$p, "\n")
+cat("- GapOf effect power:", power_gapof$p, "\n")
+cat("- Interaction power:", power_interaction$p, "\n\n")
+
+if (!is.na(min_n)) {
+  cat("Minimum subjects needed for 80% power:", min_n, "\n")
+}
+
+cat("\nRecommendations:\n")
+if (power_condition$p < 0.80) {
+  cat("- Increase sample size to achieve 80% power for condition effect\n")
+} else {
+  cat("- Current sample size is sufficient for condition effect\n")
+}
+
+```
+
+Save results
+```{r}
+
+# Save power results to CSV
+write_csv(power_results, "power_analysis_results.csv")
+
+# Save summary
+sink("power_analysis_summary.txt")
+cat("=== Power Analysis Summary ===\n\n")
+cat("Model: hit_rate ~ condition * gapOf + (1|ID)\n\n")
+cat("Current sample size:", current_n, "subjects\n\n")
+cat("Power results:\n")
+cat("- Condition effect power:", power_condition$p, "\n")
+cat("- GapOf effect power:", power_gapof$p, "\n")
+cat("- Interaction power:", power_interaction$p, "\n\n")
+if (!is.na(min_n)) {
+  cat("Minimum subjects needed for 80% power:", min_n, "\n")
+}
+sink()
+
+cat("Results saved to power_analysis_results.csv and power_analysis_summary.txt\n")
+
+```

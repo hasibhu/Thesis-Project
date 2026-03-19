@@ -1,0 +1,169 @@
+---
+title: "Power Analysis"
+output: html_document
+date: "2026-03-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Clear environment
+```{r, include=FALSE}
+
+rm(list = ls(all.names = TRUE))
+```
+
+Install packages
+```{r}
+install.packages(c(
+  "pwr",
+  "lme4",
+  "simr",
+  "effectsize"
+))
+```
+
+Load libraries
+```{r, include=FALSE}
+library(pwr)
+library(lme4)
+library(simr)
+library(effectsize)
+```
+
+Power Analysis for 80% Power
+```{r}
+
+# Parameters based on pilot data
+alpha <- 0.05
+target_power <- 0.80
+
+# Get effect size from pilot data
+# Calculate Cohen's d for Hit/Miss between conditions
+# Example: if you have two conditions to compare
+
+# For t-test (two independent groups)
+# pwr.t.test(n = , d = , sig.level = , power = , type = , alternative = )
+
+# Example: if effect size d = 0.5 (medium effect)
+# pwr.t.test(d = 0.5, power = 0.80, type = "two.sample", alternative = "two.sided")
+
+# For ANOVA (multiple groups)
+# pwr.anova.test(k = , n = , f = , sig.level = , power = )
+
+# Example: if effect size f = 0.25 (medium effect), 3 groups
+# pwr.anova.test(k = 3, f = 0.25, power = 0.80)
+
+# For linear mixed models using simr
+# powerSim(model, nsim = 100)
+
+```
+
+Calculate effect size from pilot data
+```{r}
+
+# Load pilot data to calculate effect sizes
+path  <- "~/labrotation.si@gmail.com - Google Drive/My Drive/Hasib Thesis/ExperimentDataConvert/dataAnalysis/dataFiles"
+
+files <-list.files(path, pattern = "\\.csv$", full.names = TRUE, recursive = FALSE)
+names(files) <- basename(files)
+
+read_one <- function(f){
+  df <- read_csv(f, show_col_types = FALSE,
+                 na = c("", "NA", "NaN"),
+                 locale = locale(encoding = "UTF-8"),
+                 guess_max = 100000)
+  if ("ID" %in% names(df)) mutate(df, ID = as.character(.data$ID)) else df
+}
+
+DT <- map_dfr(files, read_one, .id = "source_file") %>%
+  relocate(source_file, .before = 1)
+
+# Calculate effect size (Cohen's d) for Hit rate between conditions
+hit_by_condition <- DT %>%
+  filter(signal_detection == "Hit") %>%
+  group_by(ID, condition) %>%
+  summarise(n_trials = n(), .groups = "drop") %>%
+  pivot_wider(names_from = condition, values_from = n_trials, id_cols = ID, values_fill = 0)
+
+# Calculate means and SD for each condition
+condition_means <- DT %>%
+  filter(signal_detection == "Hit") %>%
+  group_by(condition) %>%
+  summarise(
+    mean_hit = n(),
+    sd_hit = NA,
+    .groups = "drop"
+  )
+
+# Cohen's d calculation
+# d = (mean1 - mean2) / pooled_sd
+
+# Calculate required sample size for 80% power
+# Using pwr.t.test for two-sample t-test
+# pwr.t.test(d = effect_size, power = 0.80, type = "two.sample")
+
+```
+
+Calculate required sample size
+```{r}
+
+# For two-sample t-test
+# Replace d with your calculated effect size
+effect_size_d <- 0.5  # Example: medium effect
+
+pwr_result <- pwr.t.test(
+  d = effect_size_d,
+  power = 0.80,
+  sig.level = 0.05,
+  type = "two.sample",
+  alternative = "two.sided"
+)
+
+pwr_result
+
+# Required sample size per group
+n_per_group <- ceiling(pwr_result$n)
+total_n <- n_per_group * 2
+
+cat("Required sample size per group:", n_per_group, "\n")
+cat("Total required sample size:", total_n, "\n")
+
+# For ANOVA (if more than 2 conditions)
+# k = number of groups
+# f = effect size (Cohen's f)
+
+# pwr.anova.test(k = 3, f = 0.25, power = 0.80)
+
+```
+
+Power analysis for mixed effects model
+```{r}
+
+# If using linear mixed effects model
+# Calculate effect size for lmer
+
+# Example model
+# lmer_model <- lmer(signal_detection ~ condition + (1|ID), data = DT)
+
+# Using simr for power analysis of mixed models
+# powerSim(lmer_model, nsim = 100)
+
+# For extension: vary sample size
+# powerCurve(lmer_model, nsim = 100, along = "ID")
+
+```
+
+Summary
+```{r}
+
+# Print summary of power analysis
+cat("=== Power Analysis Summary ===\n")
+cat("Target power: 80%\n")
+cat("Significance level (alpha): 0.05\n")
+cat("Effect size (d):", effect_size_d, "\n")
+cat("Required n per group:", n_per_group, "\n")
+cat("Total required n:", total_n, "\n")
+
+```

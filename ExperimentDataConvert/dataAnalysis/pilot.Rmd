@@ -1,0 +1,395 @@
+---
+title: "Hasib"
+output: html_document
+date: "2026-03-02"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+```
+
+Clear enviroment
+```{r, include=FALSE}
+
+rm(list = ls(all.names = TRUE)) #clean environment
+```
+
+install packages
+```{r}
+install.packages(c(
+  "plyr",
+  "tidyverse",
+  "rstatix",
+  "cocor",
+  "RColorBrewer",
+  "psych",
+  "magrittr",
+  "data.table",
+  "flextable",
+  "officer",
+  "flextable",
+  "officer",
+  "ggplot2"
+))
+```
+
+upload libraries
+
+```{r, include=FALSE}
+library(plyr)
+library(tidyverse)
+library(rstatix)
+library(cocor)
+library(RColorBrewer)
+library(psych)
+library(magrittr )
+library(data.table)
+library(flextable)
+library(officer)
+```
+
+```{r}
+
+```
+
+
+
+
+Read files
+```{r}
+
+path  <- "~/labrotation.si@gmail.com - Google Drive/My Drive/Hasib Thesis/ExperimentDataConvert/dataAnalysis/dataFiles"
+
+files <-list.files(path, pattern = "\\.csv$", full.names = TRUE, recursive = FALSE)
+names(files) <- basename(files)
+
+read_one <- function(f){
+  df <- read_csv(f, show_col_types = FALSE,
+                 na = c("", "NA", "NaN"),
+                 locale = locale(encoding = "UTF-8"),
+                 guess_max = 100000)
+  if ("ID" %in% names(df)) mutate(df, ID = as.character(.data$ID)) else df
+}
+
+DT <- map_dfr(files, read_one, .id = "source_file") %>%
+  relocate(source_file, .before = 1)
+#QC no of trails
+DT%>%
+  group_by(ID) %>%
+  summarise(n_rows = n(), .groups = "drop")
+```
+
+Calculate percentage of each signal_detection category per ID
+```{r}
+
+result <- DT %>%
+  group_by(ID, signal_detection) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(ID) %>%
+  mutate(percentage = 100 * n / sum(n)) %>%
+  ungroup()
+
+result
+
+# Sum percentages per ID to verify they equal 100
+check_totals <- result %>%
+  group_by(ID) %>%
+  summarise(total_percentage = sum(percentage), .groups = "drop")
+
+check_totals
+
+# Using the existing 'result' object (with percentages per signal category)
+
+accuracy_from_result <- result %>%
+  mutate(response_type = case_when(
+    signal_detection %in% c("Hit", "CR") ~ "Correct",
+    signal_detection %in% c("FA", "Miss") ~ "Incorrect"
+  )) %>%
+  group_by(ID, response_type) %>%
+  summarise(percentage = sum(percentage), .groups = "drop")
+
+accuracy_from_result
+```
+
+Calculate percentage of Hit and Miss for each gapOf 1-11
+```{r}
+
+hit_miss_by_gap <- DT %>%
+  filter(signal_detection %in% c("Hit", "Miss")) %>%
+  group_by(gapOf, signal_detection) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(gapOf) %>%
+  mutate(percentage = 100 * n / sum(n)) %>%
+  ungroup()
+
+hit_miss_by_gap
+
+# Pivot for easier viewing
+hit_pivot <- hit_miss_by_gap %>%
+  pivot_wider(names_from = signal_detection, values_from = percentage, id_cols = gapOf)
+
+hit_pivot
+```
+
+Calculate percentage of Hit and Miss for each gapOf by condition
+```{r}
+
+hit_miss_by_gap_condition <- DT %>%
+  filter(signal_detection %in% c("Hit", "Miss")) %>%
+  group_by(condition, gapOf, signal_detection) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(condition, gapOf) %>%
+  mutate(percentage = 100 * n / sum(n)) %>%
+  ungroup()
+
+hit_miss_by_gap_condition
+
+# Pivot for easier viewing
+hit_miss_pivot <- hit_miss_by_gap_condition %>%
+  pivot_wider(names_from = signal_detection, values_from = percentage, id_cols = c(condition, gapOf))
+
+hit_miss_pivot
+```
+
+Calculate percentage of Hit and Miss for each condition
+```{r}
+
+hit_miss_by_condition <- DT %>%
+  filter(signal_detection %in% c("Hit", "Miss")) %>%
+  group_by(condition, signal_detection) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(condition) %>%
+  mutate(percentage = 100 * n / sum(n)) %>%
+  ungroup()
+
+hit_miss_by_condition
+
+# Pivot for easier viewing
+hit_miss_condition_pivot <- hit_miss_by_condition %>%
+  pivot_wider(names_from = signal_detection, values_from = c(n, percentage), id_cols = condition)
+
+hit_miss_condition_pivot
+```
+
+# Signal Detection Theory Analysis
+
+## Step 1: Calculate Hit Rate for each difficulty level (gapOf 1-11)
+
+```{r}
+# Calculate Hit Rate for each difficulty level
+# Hit = "Different" responses to actually different pairs / total different pairs at each level
+
+sdt_results <- data.frame(
+  difficulty_level = 1:11,
+  total_trials = NA,
+  hits = NA,
+  hit_rate = NA,
+  z_hit = NA
+)
+
+for (level in 1:11) {
+  different_trials <- DT[DT$gapOf == level, ]
+  total_different <- nrow(different_trials)
+  hits <- sum(different_trials$decision_choice == "Different")
+  Hk <- hits / total_different
+  
+  # Apply log-linear correction for extreme values
+  if (Hk == 1) {
+    Hk_corrected <- 1 - 1/(2 * total_different)
+  } else if (Hk == 0) {
+    Hk_corrected <- 1/(2 * total_different)
+  } else {
+    Hk_corrected <- Hk
+  }
+  
+  sdt_results$total_trials[level] <- total_different
+  sdt_results$hits[level] <- hits
+  sdt_results$hit_rate[level] <- Hk
+  sdt_results$z_hit[level] <- qnorm(Hk_corrected)
+}
+
+sdt_results
+```
+
+## Step 2: Calculate False Alarm Rate (gapOf = 0)
+
+```{r}
+# FA = "Different" responses to identical pairs / total identical pairs
+identical_trials <- DT[DT$gapOf == 0, ]
+total_identical <- nrow(identical_trials)
+different_responses_to_identical <- sum(identical_trials$decision_choice == "Different")
+
+FA <- different_responses_to_identical / total_identical
+
+# Apply log-linear correction for extreme values
+if (FA == 0) {
+  z_FA <- qnorm(1 - 1/(2 * total_identical))
+} else if (FA == 1) {
+  z_FA <- qnorm(1/(2 * total_identical))
+} else {
+  z_FA <- qnorm(FA)
+}
+
+cat("Total identical trials (gapOf = 0):", total_identical, "\n")
+cat("'Different' responses to identical:", different_responses_to_identical, "\n")
+cat("FA rate:", round(FA, 4), "\n")
+cat("z(FA):", round(z_FA, 4), "\n")
+```
+
+## Step 3 & 4: Calculate d' for each difficulty level
+
+```{r}
+# d' = z(Hit) - z(FA) for each difficulty level
+sdt_results$z_fa <- z_FA
+sdt_results$d_prime <- sdt_results$z_hit - sdt_results$z_fa
+
+sdt_results
+```
+
+## Step 5: Final Results Table
+
+```{r}
+# Create final results table
+cat("\n=== FINAL SDT RESULTS TABLE ===\n")
+cat("Difficulty Level | Total Trials | Hits | Hit Rate | d'\n")
+cat("-----------------|--------------|------|----------|--------\n")
+
+for (level in 1:11) {
+  cat(sprintf("%16d | %12d | %4d | %8.4f | %6.4f\n",
+              level, 
+              sdt_results$total_trials[level],
+              sdt_results$hits[level],
+              sdt_results$hit_rate[level], 
+              sdt_results$d_prime[level]))
+}
+```
+
+## Interpretation
+
+```{r}
+# Check 1: Does hit rate increase with difficulty level?
+cat("\n=== INTERPRETATION ===\n")
+cat("1. Does hit rate increase as the difference between figures increases?\n")
+
+# Calculate correlation between difficulty level and hit rate
+correlation <- cor(sdt_results$difficulty_level, sdt_results$hit_rate)
+cat("   Correlation (level vs hit rate):", round(correlation, 4), "\n")
+cat("   ", ifelse(correlation > 0, "Yes, positive trend observed", "No clear trend"), "\n\n")
+
+# Check 2: Extreme performance (ceiling/floor effects)
+cat("2. Extreme performance (ceiling/floor effects):\n")
+extreme_levels <- which(sdt_results$hit_rate > 0.9 | sdt_results$hit_rate < 0.1)
+if (length(extreme_levels) > 0) {
+  cat("   Levels with >90% or <10% hit rate:", paste(extreme_levels, collapse = ", "), "\n")
+  cat("   ", paste(sdt_results$hit_rate[extreme_levels], collapse = ", "), "\n\n")
+} else {
+  cat("   No extreme levels detected.\n\n")
+}
+
+# Check 3: Informative middle levels
+cat("3. Levels with non-extreme performance (most informative for measuring sensitivity):\n")
+informative_levels <- which(sdt_results$hit_rate > 0.1 & sdt_results$hit_rate < 0.9)
+cat("   Informative levels:", paste(informative_levels, collapse = ", "), "\n")
+cat("   Hit rates:", paste(round(sdt_results$hit_rate[informative_levels], 4), collapse = ", "), "\n")
+cat("   d' values:", paste(round(sdt_results$d_prime[informative_levels], 4), collapse = ", "), "\n")
+```
+
+# Correlation Plot: gapOf vs d'
+
+```{r}
+# Correlation plot: gapOf vs d'
+
+library(ggplot2)
+
+# Create plot
+plot_sdt <- ggplot(sdt_results, aes(x = difficulty_level, y = d_prime)) +
+  geom_point(size = 3, color = "steelblue") +
+  geom_smooth(method = "lm", se = TRUE, color = "red") +
+  labs(
+    title = "Correlation between Difficulty Level (gapOf) and Sensitivity (d')",
+    x = "Difficulty Level (gapOf)",
+    y = "Sensitivity (d')"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Display plot
+plot_sdt
+
+# Calculate correlation
+cor_test <- cor.test(sdt_results$difficulty_level, sdt_results$d_prime)
+cat("Correlation:", round(cor_test$estimate, 4), "\n")
+cat("p-value:", round(cor_test$p.value, 6), "\n")
+```
+
+# Correlation Plot: gapOf vs Hit Rate
+
+```{r}
+# Correlation plot: gapOf vs Hit Rate
+plot_hitrate <- ggplot(sdt_results, aes(x = difficulty_level, y = hit_rate)) +
+  geom_point(size = 3, color = "darkgreen") +
+  geom_smooth(method = "lm", se = TRUE, color = "red") +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    title = "Correlation between Difficulty Level (gapOf) and Hit Rate",
+    x = "Difficulty Level (gapOf)",
+    y = "Hit Rate"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Display plot
+plot_hitrate
+
+# Correlation test
+cor_hitrate <- cor.test(sdt_results$difficulty_level, sdt_results$hit_rate)
+cat("Correlation:", round(cor_hitrate$estimate, 4), "\n")
+cat("p-value:", round(cor_hitrate$p.value, 6), "\n")
+```
+# Psychometric Function: Hit Rate vs Difficulty Level
+
+```{r}
+# Psychometric Function: Hit Rate vs gapOf
+library(ggplot2)
+
+# Fit a logistic model
+psychometric_model <- glm(hit_rate ~ difficulty_level, 
+                          data = sdt_results, 
+                          family = binomial(link = "logit"),
+                          weights = total_trials)
+
+# Create prediction data
+pred_data <- data.frame(
+  difficulty_level = seq(1, 11, by = 0.1)
+)
+pred_data$predicted <- predict(psychometric_model, 
+                                newdata = pred_data, 
+                                type = "response")
+
+# Plot with fitted curve
+ggplot() +
+  # Fitted psychometric curve
+  geom_line(data = pred_data, 
+            aes(x = difficulty_level, y = predicted), 
+            color = "blue", size = 1.5) +
+  # Observed data points (sized by number of trials)
+  geom_point(data = sdt_results, 
+             aes(x = difficulty_level, y = hit_rate, size = total_trials), 
+             color = "darkred", alpha = 0.8) +
+  scale_y_continuous(limits = c(0, 1), 
+                      name = "Hit Rate (P('Different'))") +
+  scale_x_continuous(limits = c(0, 12), 
+                     name = "Difficulty Level (gapOf)",
+                     breaks = 1:11) +
+  scale_size_continuous(name = "Number of Trials") +
+  labs(title = "Psychometric Function: Hit Rate vs Difficulty Level") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Model summary
+cat("\nLogistic Regression Summary:\n")
+summary(psychometric_model)
+```
+
